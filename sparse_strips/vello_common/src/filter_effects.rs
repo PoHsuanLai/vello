@@ -15,6 +15,8 @@
 //!
 //! **Filter Functions:**
 //! - `Blur` - Gaussian blur effect
+//! - `Brightness`, `Contrast`, `Grayscale`, `HueRotate`, `Invert`, `Opacity`, `Saturate`,
+//!   `Sepia` - as colour matrices (see [`matrices`])
 //!
 //! **Filter Primitives (Single Use Only):**
 //! - `Flood` - Solid color fill
@@ -22,6 +24,7 @@
 //! - `DropShadow` - Drop shadow effect (compound primitive)
 //! - `DropShadowOnly` - Drop shadow effect without the original input
 //! - `Offset` - Translation/shift (single primitive)
+//! - `ColorMatrix` - Matrix-based color transformation
 //!
 //! **Note:** Currently only single primitive filters are supported. Filter graphs with
 //! multiple connected primitives are not yet implemented.
@@ -32,12 +35,7 @@
 //! - `FilterGraph` execution - Chaining multiple filter primitives together
 //! - `FilterInputs` - Connecting primitives to create complex effects
 //!
-//! **Filter Functions:**
-//! - `Brightness`, `Contrast`, `Grayscale`, `HueRotate`, `Invert`,
-//!   `Opacity`, `Saturate`, `Sepia`
-//!
 //! **Filter Primitives:**
-//! - `ColorMatrix` - Matrix-based color transformation
 //! - `Composite` - Porter-Duff compositing operations
 //! - `Blend` - Blend mode operations
 //! - `Morphology` - Dilate/erode operations
@@ -75,13 +73,21 @@ impl Filter {
     /// Converts a high-level CSS-style filter function into a filter graph.
     /// Use this for simple effects like blur, brightness, etc.
     pub fn from_function(function: FilterFunction) -> Self {
+        let color_matrix = |matrix| FilterPrimitive::ColorMatrix { matrix };
         // Convert function to primitive
         let primitive = match function {
             FilterFunction::Blur { radius } => FilterPrimitive::GaussianBlur {
                 std_deviation: radius,
                 edge_mode: EdgeMode::default(),
             },
-            _ => unimplemented!("Filter function {:?} not supported", function),
+            FilterFunction::Brightness { amount } => color_matrix(matrices::brightness(amount)),
+            FilterFunction::Contrast { amount } => color_matrix(matrices::contrast(amount)),
+            FilterFunction::Grayscale { amount } => color_matrix(matrices::grayscale(amount)),
+            FilterFunction::HueRotate { angle } => color_matrix(matrices::hue_rotate(angle)),
+            FilterFunction::Invert { amount } => color_matrix(matrices::invert(amount)),
+            FilterFunction::Opacity { amount } => color_matrix(matrices::opacity(amount)),
+            FilterFunction::Saturate { amount } => color_matrix(matrices::saturate(amount)),
+            FilterFunction::Sepia { amount } => color_matrix(matrices::sepia(amount)),
         };
 
         Self::from_primitive(primitive)
@@ -251,7 +257,7 @@ pub enum FilterFunction {
     },
     //
     // ============================================================
-    // TODO: The following filter functions are not yet implemented
+    // The following filter functions are implemented as colour matrices
     // ============================================================
     //
     /// Brightness adjustment.
@@ -1103,6 +1109,182 @@ pub mod matrices {
         0.272, 0.534, 0.131, 0.0, 0.0, // Blue
         0.0, 0.0, 0.0, 1.0, 0.0, // Alpha
     ];
+
+    // The matrices below are the equivalents of the CSS filter functions, as given in
+    // <https://drafts.fxtf.org/filter-effects/#filter-functions>.
+
+    /// The matrix of `brightness(amount)`: every colour channel is scaled by `amount`.
+    pub fn brightness(amount: f32) -> [f32; 20] {
+        [
+            amount, 0.0, 0.0, 0.0, 0.0, //
+            0.0, amount, 0.0, 0.0, 0.0, //
+            0.0, 0.0, amount, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ]
+    }
+
+    /// The matrix of `contrast(amount)`: `c' = amount * c + (0.5 - 0.5 * amount)`.
+    pub fn contrast(amount: f32) -> [f32; 20] {
+        let offset = 0.5 - 0.5 * amount;
+        [
+            amount, 0.0, 0.0, 0.0, offset, //
+            0.0, amount, 0.0, 0.0, offset, //
+            0.0, 0.0, amount, 0.0, offset, //
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ]
+    }
+
+    /// The matrix of `grayscale(amount)`; `amount` is clamped to `0.0..=1.0`.
+    pub fn grayscale(amount: f32) -> [f32; 20] {
+        let a = 1.0 - amount.clamp(0.0, 1.0);
+        [
+            0.2126 + 0.7874 * a,
+            0.7152 - 0.7152 * a,
+            0.0722 - 0.0722 * a,
+            0.0,
+            0.0, //
+            0.2126 - 0.2126 * a,
+            0.7152 + 0.2848 * a,
+            0.0722 - 0.0722 * a,
+            0.0,
+            0.0, //
+            0.2126 - 0.2126 * a,
+            0.7152 - 0.7152 * a,
+            0.0722 + 0.9278 * a,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ]
+    }
+
+    /// The matrix of `hue-rotate(angle)`, with the angle in degrees.
+    pub fn hue_rotate(angle: f32) -> [f32; 20] {
+        let (sin, cos) = sin_cos(angle.to_radians());
+        [
+            0.213 + cos * 0.787 - sin * 0.213,
+            0.715 - cos * 0.715 - sin * 0.715,
+            0.072 - cos * 0.072 + sin * 0.928,
+            0.0,
+            0.0, //
+            0.213 - cos * 0.213 + sin * 0.143,
+            0.715 + cos * 0.285 + sin * 0.140,
+            0.072 - cos * 0.072 - sin * 0.283,
+            0.0,
+            0.0, //
+            0.213 - cos * 0.213 - sin * 0.787,
+            0.715 - cos * 0.715 + sin * 0.715,
+            0.072 + cos * 0.928 + sin * 0.072,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ]
+    }
+
+    /// The matrix of `invert(amount)`; `amount` is clamped to `0.0..=1.0`.
+    pub fn invert(amount: f32) -> [f32; 20] {
+        let amount = amount.clamp(0.0, 1.0);
+        let slope = 1.0 - 2.0 * amount;
+        [
+            slope, 0.0, 0.0, 0.0, amount, //
+            0.0, slope, 0.0, 0.0, amount, //
+            0.0, 0.0, slope, 0.0, amount, //
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ]
+    }
+
+    /// The matrix of `opacity(amount)`; `amount` is clamped to `0.0..=1.0`.
+    pub fn opacity(amount: f32) -> [f32; 20] {
+        [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0, //
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            0.0,
+            amount.clamp(0.0, 1.0),
+            0.0,
+        ]
+    }
+
+    /// The matrix of `saturate(amount)`.
+    pub fn saturate(amount: f32) -> [f32; 20] {
+        let s = amount;
+        [
+            0.213 + 0.787 * s,
+            0.715 - 0.715 * s,
+            0.072 - 0.072 * s,
+            0.0,
+            0.0, //
+            0.213 - 0.213 * s,
+            0.715 + 0.285 * s,
+            0.072 - 0.072 * s,
+            0.0,
+            0.0, //
+            0.213 - 0.213 * s,
+            0.715 - 0.715 * s,
+            0.072 + 0.928 * s,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ]
+    }
+
+    /// The matrix of `sepia(amount)`; `amount` is clamped to `0.0..=1.0`.
+    pub fn sepia(amount: f32) -> [f32; 20] {
+        let a = 1.0 - amount.clamp(0.0, 1.0);
+        [
+            0.393 + 0.607 * a,
+            0.769 - 0.769 * a,
+            0.189 - 0.189 * a,
+            0.0,
+            0.0, //
+            0.349 - 0.349 * a,
+            0.686 + 0.314 * a,
+            0.168 - 0.168 * a,
+            0.0,
+            0.0, //
+            0.272 - 0.272 * a,
+            0.534 - 0.534 * a,
+            0.131 + 0.869 * a,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ]
+    }
+
+    fn sin_cos(radians: f32) -> (f32, f32) {
+        #[cfg(not(feature = "std"))]
+        use peniko::kurbo::common::FloatFuncs as _;
+        (radians.sin(), radians.cos())
+    }
 }
 
 /// Common convolution kernels.
