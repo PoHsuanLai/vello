@@ -91,7 +91,6 @@
 //! remain:
 //!
 //! - Complex filter graphs are currently not supported at all and will panic.
-//!   In multi-threaded mode, even simple filters are currently unsupported.
 //! - Parts of the API and its documentation are still suboptimal, for example
 //!   the [`Resources`][] lifecycle.
 //! - Some exposed features remain experimental and are not recommended for use,

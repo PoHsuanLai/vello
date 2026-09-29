@@ -467,7 +467,7 @@ impl RenderContext {
     ///
     /// # Panics
     ///
-    /// Panics if `filter` is provided when this context uses multi-threaded rendering.
+    /// Never panics for a filter that is not implemented: see `vello_common::filter_effects`.
     pub fn push_layer(
         &mut self,
         clip_path: Option<&BezPath>,

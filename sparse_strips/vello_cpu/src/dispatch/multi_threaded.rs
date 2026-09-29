@@ -32,10 +32,15 @@ use vello_common::filter::FilterData;
 use vello_common::geometry::RectU16;
 use vello_common::mask::Mask;
 use vello_common::paint::{ImageResolver, Paint};
+use vello_common::pixmap::Pixmap;
 use vello_common::pixmap::PixmapMut;
-use vello_common::record::{CommandRecorder, LayerClip, LayerProps, PoppedLayer};
+use vello_common::record::{
+    CommandRecorder, LayerClip, LayerProps, Node, PoppedLayer, RecordedLayerKind,
+};
 use vello_common::strip::Strip;
 use vello_common::strip_generator::{GenerationMode, StripGenerator, StripStorage};
+use vello_common::util::strip_bbox;
+use vello_common::viewport::ViewportState;
 
 mod cost;
 mod worker;
@@ -111,6 +116,20 @@ pub(crate) struct MultiThreadedDispatcher {
     // So that we can reuse memory allocations across different runs.
     allocations: Allocations,
     layer_depth: usize,
+    /// The clip paths pushed so far, so that a filter layer can replay them into its own viewport.
+    clips: Vec<ClipSpec>,
+    /// While a filter layer is open, everything is recorded on the main thread through this
+    /// viewport (filter layers render in their own, padded and shifted, coordinate space, which
+    /// the workers' scene-sized strip generators cannot produce).
+    filter_viewport: Option<ViewportState>,
+}
+
+/// A clip path as it was pushed.
+struct ClipSpec {
+    path: BezPath,
+    fill_rule: Fill,
+    transform: Affine,
+    aliasing_threshold: Option<u8>,
 }
 
 impl MultiThreadedDispatcher {
@@ -158,6 +177,8 @@ impl MultiThreadedDispatcher {
             alpha_storage,
             num_threads,
             layer_depth: 0,
+            clips: Vec::new(),
+            filter_viewport: None,
         };
 
         dispatcher.init();
@@ -250,6 +271,11 @@ impl MultiThreadedDispatcher {
     }
 
     fn flush_tasks(&mut self) {
+        // Without a sender the workers have been shut down by a flush, and nothing is pending
+        // (`register_task` restarts them before it queues a task).
+        if self.task_sender.is_none() {
+            return;
+        }
         self.send_pending_tasks();
 
         self.batch_cost = 0.0;
@@ -389,72 +415,243 @@ impl MultiThreadedDispatcher {
     fn rasterize_with<S: Simd, F: FineKernel<S>>(
         &self,
         simd: S,
-        mut target: PixmapMut<'_>,
+        target: PixmapMut<'_>,
         scene_width: u16,
         scene_height: u16,
         settings: RasterizerSettings,
         encoded_paints: &[EncodedPaint],
         image_resolver: &dyn ImageResolver,
     ) {
-        let mut bucketer = self.bucketer.lock().unwrap();
-        let filters = FilterContext::new(0);
-        bucketer.reset(RectU16::new(0, 0, scene_width, scene_height));
-        bucketer.bucket_commands(
-            &self.recorder.nodes,
-            &self.recorder.draws,
-            &self.recorder.layers,
-            &self.strip_storage.strips,
-            encoded_paints,
-            &filters,
-        );
-
         let alpha_slots = self.alpha_storage.take();
         {
-            let alpha_buffers = alpha_slots.iter().map(Vec::as_slice).collect::<Vec<_>>();
-            let use_src_over = settings.composite_mode == CompositeMode::SrcOver;
-            let resources = FineResources {
-                alpha_buffers: &alpha_buffers,
+            let mut alpha_buffers = alpha_slots.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            // The main thread's own alphas (filter layers are recorded there) come last.
+            alpha_buffers.push(self.strip_storage.alphas.as_slice());
+            let filters = self.rasterize_filter_layers::<S, F>(
+                simd,
+                &alpha_buffers,
                 encoded_paints,
-                filter_paints: &bucketer.filter_paints,
                 image_resolver,
-            };
+            );
             let params = FineRenderParams {
                 scene_size: (scene_width, scene_height),
                 target_offset: settings.offset,
             };
-
-            let mut regions = Regions::new(
-                &mut target,
-                params.scene_size,
-                params.target_offset,
-                bucketer.rows().len(),
+            self.bucket_and_rasterize::<S, F>(
+                simd,
+                &self.recorder.nodes,
+                RectU16::new(0, 0, scene_width, scene_height),
+                &filters,
+                target,
+                params,
+                settings.composite_mode == CompositeMode::SrcOver,
+                &alpha_buffers,
+                encoded_paints,
+                image_resolver,
             );
-            let fines = ThreadLocal::new();
-            self.thread_pool.install(|| {
-                regions.update_par(|region| {
-                    let mut fine = fines
-                        .get_or(|| {
-                            RefCell::new((
-                                Fine::<S, F>::new(simd, bucketer.width()),
-                                DepthBuffer::new(bucketer.width()),
-                            ))
-                        })
-                        .borrow_mut();
-                    let (fine, depth) = &mut *fine;
-
-                    rasterize_region::<S, F>(
-                        fine,
-                        depth,
-                        region,
-                        &bucketer,
-                        resources,
-                        use_src_over,
-                    );
-                });
-            });
         }
 
         self.alpha_storage.init(alpha_slots);
+    }
+
+    fn bucket_and_rasterize<S: Simd, F: FineKernel<S>>(
+        &self,
+        simd: S,
+        cmds: &[Node],
+        viewport: RectU16,
+        filter_ctx: &FilterContext,
+        mut target: PixmapMut<'_>,
+        params: FineRenderParams,
+        use_src_over: bool,
+        alpha_buffers: &[&[u8]],
+        encoded_paints: &[EncodedPaint],
+        image_resolver: &dyn ImageResolver,
+    ) {
+        let mut bucketer = self.bucketer.lock().unwrap();
+        bucketer.reset(viewport);
+        bucketer.bucket_commands(
+            cmds,
+            &self.recorder.draws,
+            &self.recorder.layers,
+            &self.strip_storage.strips,
+            encoded_paints,
+            filter_ctx,
+        );
+
+        let resources = FineResources {
+            alpha_buffers,
+            encoded_paints,
+            filter_paints: &bucketer.filter_paints,
+            image_resolver,
+        };
+        let mut regions = Regions::new(
+            &mut target,
+            params.scene_size,
+            params.target_offset,
+            bucketer.rows().len(),
+        );
+        let fines = ThreadLocal::new();
+        self.thread_pool.install(|| {
+            regions.update_par(|region| {
+                let mut fine = fines
+                    .get_or(|| {
+                        RefCell::new((
+                            Fine::<S, F>::new(simd, bucketer.width()),
+                            DepthBuffer::new(bucketer.width()),
+                        ))
+                    })
+                    .borrow_mut();
+                let (fine, depth) = &mut *fine;
+
+                rasterize_region::<S, F>(fine, depth, region, &bucketer, resources, use_src_over);
+            });
+        });
+    }
+
+    /// Render every filter layer to its own pixmap, dependencies first (see the single-threaded
+    /// dispatcher, which this mirrors).
+    fn rasterize_filter_layers<S: Simd, F: FineKernel<S>>(
+        &self,
+        simd: S,
+        alpha_buffers: &[&[u8]],
+        encoded_paints: &[EncodedPaint],
+        image_resolver: &dyn ImageResolver,
+    ) -> FilterContext {
+        let mut filter_ctx = FilterContext::new(self.recorder.layers.len());
+        for id in self.recorder.filter_layers.iter().rev().copied() {
+            let RecordedLayerKind::Filter {
+                filter_data: filter_plan,
+                placement,
+            } = &self.recorder.layers[id as usize].kind
+            else {
+                unreachable!("filter_layers only contains filter layers");
+            };
+            let pixmap_bbox = placement.pixmap_bbox;
+            if pixmap_bbox.is_empty() {
+                continue;
+            }
+
+            let mut pixmap = Pixmap::new(pixmap_bbox.width(), pixmap_bbox.height());
+            let params = FineRenderParams {
+                scene_size: (pixmap_bbox.width(), pixmap_bbox.height()),
+                target_offset: (0, 0),
+            };
+            self.bucket_and_rasterize::<S, F>(
+                simd,
+                &self.recorder.layers[id as usize].nodes,
+                pixmap_bbox,
+                &filter_ctx,
+                (&mut pixmap).into(),
+                params,
+                false,
+                alpha_buffers,
+                encoded_paints,
+                image_resolver,
+            );
+            F::filter_layer(
+                &mut pixmap,
+                &filter_plan.filter,
+                filter_ctx.scratch(),
+                filter_plan.transform,
+            );
+            filter_ctx.set_layer(id as usize, pixmap);
+        }
+        filter_ctx
+    }
+
+    /// The alpha buffer slot of strips generated on the main thread.
+    fn main_thread_idx(&self) -> u8 {
+        u8::try_from(self.num_threads).expect("at most 255 threads")
+    }
+
+    /// Record the strips generated on the main thread since `strip_start` as a fill.
+    fn record_main_fill(
+        &mut self,
+        strip_start: usize,
+        paint: Paint,
+        blend_mode: BlendMode,
+        mask: Option<Mask>,
+    ) {
+        let strip_range = strip_start..self.strip_storage.strips.len();
+        let strips = &self.strip_storage.strips[strip_range.clone()];
+        let draw = RecordedFill::new(self.main_thread_idx(), strip_range, paint, blend_mode, mask);
+        self.recorder.push_draw(draw, strips);
+    }
+
+    /// Enter a filter layer's viewport: wait for the workers so that the commands recorded
+    /// on this thread land in order, then mirror the clips pushed so far.
+    fn open_filter_viewport(&mut self) {
+        // `reset` restarts the workers without clearing `flushed`, so don't trust the flag.
+        self.flushed = false;
+        self.flush();
+        let mut viewport = ViewportState::new(
+            self.strip_generator.width(),
+            self.strip_generator.height(),
+            self.level,
+        );
+        for clip in &self.clips {
+            viewport.push_clip(
+                &clip.path,
+                clip.fill_rule,
+                clip.transform,
+                clip.aliasing_threshold,
+            );
+        }
+        self.filter_viewport = Some(viewport);
+    }
+
+    fn push_layer_on_main_thread(
+        &mut self,
+        clip_path: Option<&BezPath>,
+        fill_rule: Fill,
+        clip_transform: Affine,
+        blend_mode: BlendMode,
+        opacity: f32,
+        aliasing_threshold: Option<u8>,
+        mask: Option<Mask>,
+        filter_data: Option<FilterData>,
+    ) {
+        if self.filter_viewport.is_none() {
+            self.open_filter_viewport();
+        }
+        let thread_idx = self.main_thread_idx();
+        let viewport = self.filter_viewport.as_mut().unwrap();
+        if let Some(filter_data) = &filter_data {
+            viewport.push_root_viewport(filter_data);
+        }
+
+        let strip_storage = &mut self.strip_storage;
+        let clip_path = clip_path.map(|clip_path| {
+            let strip_start = strip_storage.strips.len();
+            viewport.with_generator_and_clip(|strip_generator, existing_clip| {
+                strip_generator.generate_filled_path(
+                    clip_path,
+                    fill_rule,
+                    clip_transform,
+                    aliasing_threshold,
+                    strip_storage,
+                    existing_clip,
+                );
+                let strip_range = strip_start..strip_storage.strips.len();
+                LayerClip {
+                    bbox: strip_bbox(&strip_storage.strips[strip_range.clone()])
+                        .unwrap_or(RectU16::ZERO),
+                    strip_range,
+                    thread_idx,
+                }
+            })
+        });
+
+        self.recorder.push_layer(
+            LayerProps {
+                blend_mode,
+                opacity,
+                mask,
+                clip_path,
+            },
+            filter_data,
+        );
+        self.layer_depth += 1;
     }
 }
 
@@ -473,6 +670,22 @@ impl Dispatcher for MultiThreadedDispatcher {
         aliasing_threshold: Option<u8>,
         mask: Option<Mask>,
     ) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            let strip_start = self.strip_storage.strips.len();
+            let strip_storage = &mut self.strip_storage;
+            viewport.with_generator_and_clip(|strip_generator, clip_path| {
+                strip_generator.generate_filled_path(
+                    path,
+                    fill_rule,
+                    transform,
+                    aliasing_threshold,
+                    strip_storage,
+                    clip_path,
+                );
+            });
+            self.record_main_fill(strip_start, paint, blend_mode, mask);
+            return;
+        }
         let start = self.allocation_group.path.len() as u32;
         self.allocation_group.path.extend(path);
         let end = self.allocation_group.path.len() as u32;
@@ -497,6 +710,22 @@ impl Dispatcher for MultiThreadedDispatcher {
         aliasing_threshold: Option<u8>,
         mask: Option<Mask>,
     ) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            let strip_start = self.strip_storage.strips.len();
+            let strip_storage = &mut self.strip_storage;
+            viewport.with_generator_and_clip(|strip_generator, clip_path| {
+                strip_generator.generate_stroked_path(
+                    path,
+                    stroke,
+                    transform,
+                    aliasing_threshold,
+                    strip_storage,
+                    clip_path,
+                );
+            });
+            self.record_main_fill(strip_start, paint, blend_mode, mask);
+            return;
+        }
         let start = self.allocation_group.path.len() as u32;
         self.allocation_group.path.extend(path);
         let end = self.allocation_group.path.len() as u32;
@@ -518,6 +747,15 @@ impl Dispatcher for MultiThreadedDispatcher {
         blend_mode: BlendMode,
         mask: Option<Mask>,
     ) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            let strip_start = self.strip_storage.strips.len();
+            let strip_storage = &mut self.strip_storage;
+            viewport.with_generator_and_clip(|strip_generator, clip_path| {
+                strip_generator.generate_filled_rect_fast(rect, strip_storage, clip_path);
+            });
+            self.record_main_fill(strip_start, paint, blend_mode, mask);
+            return;
+        }
         // For multi-threaded, fall back to path-based rendering.
         // TODO: Implement optimized rect strip generation in worker threads.
         let start = self.allocation_group.path.len() as u32;
@@ -551,11 +789,19 @@ impl Dispatcher for MultiThreadedDispatcher {
         mask: Option<Mask>,
         filter_data: Option<FilterData>,
     ) {
-        // TODO: Implement filter support in multi-threaded dispatcher.
-        // The single-threaded dispatcher has full filter support, but multi-threaded needs
-        // additional infrastructure for cross-thread layer coordination.
-        if filter_data.is_some() {
-            unimplemented!("Filter effects are not yet supported in multi-threaded rendering");
+        // Filter layers (and everything inside them) are recorded on the main thread.
+        if filter_data.is_some() || self.filter_viewport.is_some() {
+            self.push_layer_on_main_thread(
+                clip_path,
+                fill_rule,
+                clip_transform,
+                blend_mode,
+                opacity,
+                aliasing_threshold,
+                mask,
+                filter_data,
+            );
+            return;
         }
 
         let clip_path = clip_path.map(|c| {
@@ -578,6 +824,19 @@ impl Dispatcher for MultiThreadedDispatcher {
     }
 
     fn pop_layer(&mut self) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            if let PoppedLayer::Filter = self.recorder.pop_layer() {
+                viewport.pop_root_viewport();
+                if !viewport.has_root_viewports() {
+                    self.filter_viewport = None;
+                }
+            }
+            self.layer_depth = self
+                .layer_depth
+                .checked_sub(1)
+                .expect("layer stack underflow");
+            return;
+        }
         self.register_task(RenderTaskType::PopLayer);
         self.layer_depth = self
             .layer_depth
@@ -596,6 +855,8 @@ impl Dispatcher for MultiThreadedDispatcher {
         self.batch_cost = 0.0;
         self.task_idx = 0;
         self.layer_depth = 0;
+        self.clips.clear();
+        self.filter_viewport = None;
         self.task_sender = None;
         self.recorded_command_receiver = None;
         self.strip_generator.reset(width, height);
@@ -706,6 +967,16 @@ impl Dispatcher for MultiThreadedDispatcher {
         transform: Affine,
         aliasing_threshold: Option<u8>,
     ) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            viewport.push_clip(path, fill_rule, transform, aliasing_threshold);
+            return;
+        }
+        self.clips.push(ClipSpec {
+            path: path.clone(),
+            fill_rule,
+            transform,
+            aliasing_threshold,
+        });
         self.flush_tasks();
         self.clip_context.push_clip(
             path.iter(),
@@ -717,6 +988,11 @@ impl Dispatcher for MultiThreadedDispatcher {
     }
 
     fn pop_clip_path(&mut self) {
+        if let Some(viewport) = self.filter_viewport.as_mut() {
+            viewport.pop_clip();
+            return;
+        }
+        self.clips.pop();
         self.flush_tasks();
         self.clip_context.pop_clip();
     }
