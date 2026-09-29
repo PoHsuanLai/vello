@@ -13,7 +13,7 @@
 
 // Keep these variables and layouts in sync with the ones in `filter.rs`!
 
-const FILTER_SIZE_BYTES: u32 = 48;
+const FILTER_SIZE_BYTES: u32 = 96;
 const FILTER_SIZE_U32: u32 = FILTER_SIZE_BYTES / 4;
 const TEXELS_PER_FILTER: u32 = FILTER_SIZE_U32 / 4u;
 
@@ -21,6 +21,7 @@ const FILTER_TYPE_OFFSET: u32 = 0u;
 const FILTER_TYPE_FLOOD: u32 = 1u;
 const FILTER_TYPE_GAUSSIAN_BLUR: u32 = 2u;
 const FILTER_TYPE_DROP_SHADOW: u32 = 3u;
+const FILTER_TYPE_COLOR_MATRIX: u32 = 4u;
 
 const PASS_COPY: u32 = 0u;
 const PASS_FLOOD: u32 = 1u;
@@ -31,6 +32,7 @@ const PASS_BLUR_V: u32 = 5u;
 const PASS_UPSCALE: u32 = 6u;
 const PASS_COMPOSITE_DROP_SHADOW: u32 = 7u;
 const PASS_COLORIZE: u32 = 8u;
+const PASS_COLOR_MATRIX: u32 = 9u;
 
 // Keep in sync with FILTER_ATLAS_PADDING in vello_hybrid/src/filter.rs.
 const FILTER_ATLAS_PADDING: u32 = 6u;
@@ -97,6 +99,12 @@ fn get_drop_shadow_dy(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.y);
 
 /// Drop shadow color packed as RGBA8.
 fn get_drop_shadow_color(texel2: vec4<u32>) -> u32 { return texel2.z; }
+
+/// One column of a colour matrix (texels 1..=5 of the filter: the four input channel columns,
+/// then the constant offset).
+fn get_color_matrix_column(filter_data_offset: u32, column: u32) -> vec4<f32> {
+    return bitcast<vec4<f32>>(load_filter_texel(filter_data_offset, 1u + column));
+}
 
 struct FilterInstanceData {
     @location(0) source_origin: u32,
@@ -396,6 +404,24 @@ fn fs_main(
             let blurred = sample_source(source_origin, rel_coord);
             let shadow_color = unpack4x8unorm(get_drop_shadow_color(filter_texel2));
             return shadow_color * blurred.a;
+        }
+        case PASS_COLOR_MATRIX: {
+            // The matrix works on non-premultiplied colour; the source is premultiplied.
+            let source = sample_source(source_origin, rel_coord);
+            var color = vec4<f32>(0.0);
+            if source.a > 0.0 {
+                color = vec4<f32>(min(source.rgb / source.a, vec3<f32>(1.0)), source.a);
+            }
+            let result = clamp(
+                get_color_matrix_column(filter_data_offset, 0u) * color.r
+                    + get_color_matrix_column(filter_data_offset, 1u) * color.g
+                    + get_color_matrix_column(filter_data_offset, 2u) * color.b
+                    + get_color_matrix_column(filter_data_offset, 3u) * color.a
+                    + get_color_matrix_column(filter_data_offset, 4u),
+                vec4<f32>(0.0),
+                vec4<f32>(1.0),
+            );
+            return vec4<f32>(result.rgb * result.a, result.a);
         }
         // Shouldn't be reached.
         default: {
