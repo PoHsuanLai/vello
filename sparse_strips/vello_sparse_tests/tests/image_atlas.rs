@@ -7,6 +7,7 @@ use vello_common::pixmap::Pixmap;
 use vello_hybrid::{
     AtlasConfig, AtlasTextureInfo, MemorySettings, RenderSettings, Resources, WebGlRenderer,
 };
+use vello_common::multi_atlas::AtlasError;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
@@ -52,7 +53,9 @@ fn image_atlas_placeholder_is_promoted_on_first_upload() {
         "renderer initialization should not produce a WebGL error"
     );
 
-    renderer.upload_image(&mut resources, &Pixmap::new(2, 2));
+    renderer
+        .upload_image(&mut resources, &Pixmap::new(2, 2))
+        .unwrap();
 
     assert_eq!(
         renderer.atlas_info(),
@@ -76,7 +79,6 @@ fn image_atlas_placeholder_is_promoted_on_first_upload() {
 /// The renderer and the resources are both configured with a 10x10 atlas: the renderer sizes the
 /// GPU atlas texture, while the resources own the allocator that runs the `TextureTooLarge` check.
 #[wasm_bindgen_test]
-#[should_panic(expected = "TextureTooLarge")]
 fn image_atlas_upload_larger_than_atlas_fails() {
     let document = web_sys::window().unwrap().document().unwrap();
     let canvas = document
@@ -105,5 +107,12 @@ fn image_atlas_upload_larger_than_atlas_fails() {
 
     // The image is much larger than the 10x10 atlas, so the upload must fail.
     let image = Pixmap::new(64, 64);
-    renderer.upload_image(&mut resources, &image);
+    let result = renderer.upload_image(&mut resources, &image);
+    assert!(matches!(
+        result,
+        Err(AtlasError::TextureTooLarge {
+            width: 64,
+            height: 64
+        })
+    ));
 }

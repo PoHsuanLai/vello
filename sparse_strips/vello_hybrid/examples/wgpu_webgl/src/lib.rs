@@ -347,7 +347,8 @@ impl AppState {
             &self.renderer_wrapper.queue,
             &mut encoder,
             &pixmap1,
-        );
+        )
+        .unwrap();
 
         // 2nd example — uploading from a WebGL texture
         let pixmap2 = ImageScene::read_cowboy_image();
@@ -362,7 +363,8 @@ impl AppState {
             &self.renderer_wrapper.queue,
             &mut encoder,
             &texture2,
-        );
+        )
+        .unwrap();
 
         self.renderer_wrapper.queue.submit([encoder.finish()]);
     }

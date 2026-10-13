@@ -58,7 +58,7 @@ use core::fmt::Debug;
 use glifo::{GLYPH_PADDING, PendingClearRect};
 use resource::{Buffer, FragmentShader, Framebuffer, Program, Texture, VertexArray, VertexShader};
 use vello_common::image_cache::{ImageCache, ImageResource};
-use vello_common::multi_atlas::{AtlasConfig, AtlasId};
+use vello_common::multi_atlas::{AtlasConfig, AtlasError, AtlasId};
 use vello_common::{
     encode::{
         EncodedBlurredRoundedRectangle, EncodedGradient, EncodedKind, EncodedPaint,
@@ -507,11 +507,16 @@ impl WebGlRenderer {
     ///
     /// This is the WebGL analogue of the wgpu Renderer's `upload_image` method.
     /// It allocates space in the image cache and uploads the image data to the atlas texture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AtlasError`] if the image does not fit in the atlas, for example
+    /// [`AtlasError::TextureTooLarge`] if it is larger than [`Resources::max_image_size`].
     pub fn upload_image<T: WebGlAtlasWriter>(
         &mut self,
         resources: &mut Resources,
         writer: &T,
-    ) -> ImageId {
+    ) -> Result<ImageId, AtlasError> {
         self.upload_image_with(&mut resources.image_cache, writer, IMAGE_PADDING)
     }
 
@@ -520,14 +525,12 @@ impl WebGlRenderer {
         image_cache: &mut ImageCache,
         writer: &T,
         padding: u16,
-    ) -> ImageId {
+    ) -> Result<ImageId, AtlasError> {
         let width = writer.width();
         let height = writer.height();
-        // TODO: `upload_image` should return a `Result` rather than unwrapping here, so callers can
-        // handle images that are too large for the atlas instead of panicking.
-        let image_id = image_cache.allocate(width, height, padding).unwrap();
+        let image_id = image_cache.allocate(width, height, padding)?;
         self.write_to_atlas(image_cache, image_id, writer, None);
-        image_id
+        Ok(image_id)
     }
 
     /// Write pixel data to an existing atlas allocation.

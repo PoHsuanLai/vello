@@ -254,14 +254,16 @@ impl AppState {
         let pixmap1 = ImageScene::read_flower_image();
         self.renderer_wrapper
             .renderer
-            .upload_image(&mut self.renderer_wrapper.resources, &pixmap1);
+            .upload_image(&mut self.renderer_wrapper.resources, &pixmap1)
+            .unwrap();
 
         // 2nd example — uploading from a WebGL texture
         let pixmap2 = ImageScene::read_cowboy_image();
         let texture2 = self.pixmap_to_webgl_texture(&pixmap2);
         self.renderer_wrapper
             .renderer
-            .upload_image(&mut self.renderer_wrapper.resources, &texture2);
+            .upload_image(&mut self.renderer_wrapper.resources, &texture2)
+            .unwrap();
     }
 
     /// Convert a pixmap to WebGL texture

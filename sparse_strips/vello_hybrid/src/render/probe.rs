@@ -145,8 +145,9 @@ impl WebGlRenderer {
         let probe_image = Arc::new(vello_common::probe::probe_image_pixmap());
         // Note: No need to destroy the image explicitly in the end, because we discard the image
         // cache anyway.
-        let probe_image_id =
-            self.upload_image_with(&mut probe_image_cache, &probe_image, IMAGE_PADDING);
+        let probe_image_id = self
+            .upload_image_with(&mut probe_image_cache, &probe_image, IMAGE_PADDING)
+            .expect("the probe image fits in the probe atlas");
         let mut scene = Scene::new(width, height);
         vello_common::probe::draw_scene(
             &mut scene,

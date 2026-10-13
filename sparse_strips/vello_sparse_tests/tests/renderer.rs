@@ -380,7 +380,8 @@ impl HybridRenderer {
             &self.queue,
             &mut encoder,
             pixmap,
-        );
+        )
+        .unwrap();
         self.queue.submit([encoder.finish()]);
         image_id
     }
@@ -722,7 +723,7 @@ pub(crate) struct HybridRenderer {
 #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
 impl HybridRenderer {
     fn upload_image(&mut self, pixmap: &Arc<Pixmap>) -> ImageId {
-        self.renderer.upload_image(&mut self.resources, pixmap)
+        self.renderer.upload_image(&mut self.resources, pixmap).unwrap()
     }
 }
 

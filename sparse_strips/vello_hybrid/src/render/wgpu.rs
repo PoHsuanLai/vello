@@ -56,7 +56,7 @@ use core::{fmt::Debug, num::NonZeroU64};
 use glifo::PendingClearRect;
 use hashbrown::{HashMap, hash_map::Entry};
 use vello_common::image_cache::{ImageCache, ImageResource};
-use vello_common::multi_atlas::{AtlasConfig, AtlasId};
+use vello_common::multi_atlas::{AtlasConfig, AtlasError, AtlasId};
 use vello_common::{
     TextureId,
     encode::{
@@ -512,6 +512,13 @@ impl Renderer {
     /// 1. Reserves space in the image cache
     /// 2. Writes the image data directly to the atlas
     /// 3. Returns the `ImageId` for use in rendering
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AtlasError`] if the image does not fit in the atlas, for example
+    /// [`AtlasError::TextureTooLarge`] if it is larger than
+    /// [`Resources::max_image_size`]. Callers that draw images they do not control should
+    /// downscale them to that size first.
     pub fn upload_image<T: AtlasWriter>(
         &mut self,
         resources: &mut Resources,
@@ -519,7 +526,7 @@ impl Renderer {
         queue: &Queue,
         encoder: &mut CommandEncoder,
         writer: &T,
-    ) -> vello_common::paint::ImageId {
+    ) -> Result<vello_common::paint::ImageId, AtlasError> {
         self.upload_image_with(
             &mut resources.image_cache,
             device,
@@ -538,12 +545,12 @@ impl Renderer {
         encoder: &mut CommandEncoder,
         writer: &T,
         padding: u16,
-    ) -> vello_common::paint::ImageId {
+    ) -> Result<vello_common::paint::ImageId, AtlasError> {
         let width = writer.width();
         let height = writer.height();
-        let image_id = image_cache.allocate(width, height, padding).unwrap();
+        let image_id = image_cache.allocate(width, height, padding)?;
         self.write_to_atlas(image_cache, device, queue, encoder, image_id, writer, None);
-        image_id
+        Ok(image_id)
     }
 
     /// Write pixel data to an existing atlas allocation.

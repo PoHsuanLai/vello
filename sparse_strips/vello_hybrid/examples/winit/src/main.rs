@@ -443,7 +443,8 @@ impl App<'_> {
             &device_handle.queue,
             &mut encoder,
             &pixmap1,
-        );
+        )
+        .unwrap();
 
         // 2nd example — uploading from a texture (for cases where you already have a texture)
         let pixmap2 = ImageScene::read_cowboy_image();
@@ -455,7 +456,8 @@ impl App<'_> {
             &device_handle.queue,
             &mut encoder,
             &texture2,
-        );
+        )
+        .unwrap();
 
         device_handle.queue.submit([encoder.finish()]);
         self.uploaded_images[device_id] = true;
