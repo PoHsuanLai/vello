@@ -437,27 +437,33 @@ impl App<'_> {
 
         // 1st example — uploading pixmap directly
         let pixmap1 = ImageScene::read_flower_image();
-        self.renderers[device_id].as_mut().unwrap().upload_image(
-            self.resources[device_id].as_mut().unwrap(),
-            &device_handle.device,
-            &device_handle.queue,
-            &mut encoder,
-            &pixmap1,
-        )
-        .unwrap();
+        self.renderers[device_id]
+            .as_mut()
+            .unwrap()
+            .upload_image(
+                self.resources[device_id].as_mut().unwrap(),
+                &device_handle.device,
+                &device_handle.queue,
+                &mut encoder,
+                &pixmap1,
+            )
+            .unwrap();
 
         // 2nd example — uploading from a texture (for cases where you already have a texture)
         let pixmap2 = ImageScene::read_cowboy_image();
         let texture2 =
             self.upload_image_to_texture(&device_handle.device, &device_handle.queue, &pixmap2);
-        self.renderers[device_id].as_mut().unwrap().upload_image(
-            self.resources[device_id].as_mut().unwrap(),
-            &device_handle.device,
-            &device_handle.queue,
-            &mut encoder,
-            &texture2,
-        )
-        .unwrap();
+        self.renderers[device_id]
+            .as_mut()
+            .unwrap()
+            .upload_image(
+                self.resources[device_id].as_mut().unwrap(),
+                &device_handle.device,
+                &device_handle.queue,
+                &mut encoder,
+                &texture2,
+            )
+            .unwrap();
 
         device_handle.queue.submit([encoder.finish()]);
         self.uploaded_images[device_id] = true;

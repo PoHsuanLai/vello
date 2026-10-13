@@ -3,11 +3,11 @@
 
 //! Tests for the image/glyph atlas configuration of the WebGL renderer.
 
+use vello_common::multi_atlas::AtlasError;
 use vello_common::pixmap::Pixmap;
 use vello_hybrid::{
     AtlasConfig, AtlasTextureInfo, MemorySettings, RenderSettings, Resources, WebGlRenderer,
 };
-use vello_common::multi_atlas::AtlasError;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};

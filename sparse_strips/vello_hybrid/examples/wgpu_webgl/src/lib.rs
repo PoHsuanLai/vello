@@ -341,14 +341,16 @@ impl AppState {
 
         // 1st example — uploading pixmap directly to WebGL atlas
         let pixmap1 = ImageScene::read_flower_image();
-        self.renderer_wrapper.renderer.upload_image(
-            &mut self.renderer_wrapper.resources,
-            &self.renderer_wrapper.device,
-            &self.renderer_wrapper.queue,
-            &mut encoder,
-            &pixmap1,
-        )
-        .unwrap();
+        self.renderer_wrapper
+            .renderer
+            .upload_image(
+                &mut self.renderer_wrapper.resources,
+                &self.renderer_wrapper.device,
+                &self.renderer_wrapper.queue,
+                &mut encoder,
+                &pixmap1,
+            )
+            .unwrap();
 
         // 2nd example — uploading from a WebGL texture
         let pixmap2 = ImageScene::read_cowboy_image();
@@ -357,14 +359,16 @@ impl AppState {
             &self.renderer_wrapper.queue,
             &pixmap2,
         );
-        self.renderer_wrapper.renderer.upload_image(
-            &mut self.renderer_wrapper.resources,
-            &self.renderer_wrapper.device,
-            &self.renderer_wrapper.queue,
-            &mut encoder,
-            &texture2,
-        )
-        .unwrap();
+        self.renderer_wrapper
+            .renderer
+            .upload_image(
+                &mut self.renderer_wrapper.resources,
+                &self.renderer_wrapper.device,
+                &self.renderer_wrapper.queue,
+                &mut encoder,
+                &texture2,
+            )
+            .unwrap();
 
         self.renderer_wrapper.queue.submit([encoder.finish()]);
     }

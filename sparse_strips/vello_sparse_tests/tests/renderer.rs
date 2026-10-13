@@ -374,14 +374,16 @@ impl HybridRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
-        let image_id = self.renderer.upload_image(
-            &mut self.resources,
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            pixmap,
-        )
-        .unwrap();
+        let image_id = self
+            .renderer
+            .upload_image(
+                &mut self.resources,
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                pixmap,
+            )
+            .unwrap();
         self.queue.submit([encoder.finish()]);
         image_id
     }
@@ -723,7 +725,9 @@ pub(crate) struct HybridRenderer {
 #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
 impl HybridRenderer {
     fn upload_image(&mut self, pixmap: &Arc<Pixmap>) -> ImageId {
-        self.renderer.upload_image(&mut self.resources, pixmap).unwrap()
+        self.renderer
+            .upload_image(&mut self.resources, pixmap)
+            .unwrap()
     }
 }
 
