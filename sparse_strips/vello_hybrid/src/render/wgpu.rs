@@ -261,6 +261,11 @@ impl Renderer {
             );
         }
 
+        // A pixmap image (a bitmap glyph drawn without the glyph atlas: a colour emoji from an
+        // `sbix` or `CBDT` font) carries its pixels in the scene. The shaders sample only the
+        // atlas, so it is put there for this frame and taken out after it.
+        let frame_images =
+            self.upload_frame_images(&scene.encoded_paints, resources, device, queue, encoder)?;
         let result = self.render_scene(
             scene,
             device,
@@ -270,10 +275,14 @@ impl Renderer {
             view,
             &resources.image_cache,
             &scene.encoded_paints,
+            &frame_images,
             true,
             RootTarget::UserSurface,
             texture_bindings,
         );
+        for image_id in frame_images.ids() {
+            self.destroy_image(resources, encoder, image_id);
+        }
 
         #[cfg(feature = "text")]
         resources.after_render(self, |renderer, rect| {
@@ -367,6 +376,7 @@ impl Renderer {
             &layer_view,
             &dummy_image_cache,
             encoded_paints,
+            &FrameImages::default(),
             false,
             RootTarget::AtlasLayer,
             texture_bindings,
@@ -413,12 +423,18 @@ impl Renderer {
         view: &TextureView,
         image_cache: &ImageCache,
         encoded_paints: &[EncodedPaint],
+        frame_images: &FrameImages,
         clear: bool,
         root_output_target: RootTarget,
         texture_bindings: &TextureBindings,
     ) -> Result<(), RenderError> {
         self.programs.depth_cleared_this_frame = false;
-        self.prepare_gpu_encoded_paints(encoded_paints, image_cache, texture_bindings)?;
+        self.prepare_gpu_encoded_paints(
+            encoded_paints,
+            image_cache,
+            frame_images,
+            texture_bindings,
+        )?;
         let required_texture_size = self
             .layers_config
             .required_intermediate_texture_size(&scene.recorder)?;
@@ -597,6 +613,47 @@ impl Renderer {
         );
     }
 
+    /// Put each distinct pixmap image of `encoded_paints` into the atlas, for one frame. On a
+    /// failure the images already put there are taken out again.
+    fn upload_frame_images(
+        &mut self,
+        encoded_paints: &[EncodedPaint],
+        resources: &mut Resources,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+    ) -> Result<FrameImages, RenderError> {
+        let mut frame_images = FrameImages::default();
+        for paint in encoded_paints {
+            let EncodedPaint::Image(img) = paint else {
+                continue;
+            };
+            let ImageSource::Pixmap(pixmap) = &img.source else {
+                continue;
+            };
+            if frame_images.get(pixmap).is_some() {
+                continue;
+            }
+            match self.upload_image_with(
+                &mut resources.image_cache,
+                device,
+                queue,
+                encoder,
+                pixmap,
+                IMAGE_PADDING,
+            ) {
+                Ok(image_id) => frame_images.0.push((Arc::as_ptr(pixmap), image_id)),
+                Err(error) => {
+                    for image_id in frame_images.ids() {
+                        self.destroy_image(resources, encoder, image_id);
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(frame_images)
+    }
+
     /// Destroy an image from the cache and clear the allocated slot in the atlas.
     pub fn destroy_image(
         &mut self,
@@ -686,6 +743,7 @@ impl Renderer {
         &mut self,
         encoded_paints: &[EncodedPaint],
         image_cache: &ImageCache,
+        frame_images: &FrameImages,
         texture_bindings: &TextureBindings,
     ) -> Result<(), RenderError> {
         self.encoded_paints
@@ -697,8 +755,11 @@ impl Renderer {
             self.paint_idxs[encoded_paint_idx] = current_idx;
             match paint {
                 EncodedPaint::Image(img) => {
-                    let ImageSource::OpaqueId { id: image_id, .. } = img.source else {
-                        panic!("pixmap image sources are not supported by Vello Hybrid");
+                    let image_id = match &img.source {
+                        ImageSource::OpaqueId { id, .. } => *id,
+                        ImageSource::Pixmap(pixmap) => frame_images
+                            .get(pixmap)
+                            .expect("every pixmap image is uploaded before the frame is drawn"),
                     };
 
                     let image_resource = image_cache.get(image_id).unwrap();
@@ -3340,6 +3401,25 @@ impl AtlasWriter for Texture {
 }
 
 /// Implementation for `Pixmap` - direct upload to atlas
+/// The pixmap images of one frame and where [`Renderer::render`] put them in the atlas, keyed by
+/// the pixmap's allocation: a glyph drawn twice in a frame shares one `Arc`.
+#[derive(Debug, Default)]
+struct FrameImages(Vec<(*const Pixmap, vello_common::paint::ImageId)>);
+
+impl FrameImages {
+    fn get(&self, pixmap: &Arc<Pixmap>) -> Option<vello_common::paint::ImageId> {
+        let key = Arc::as_ptr(pixmap);
+        self.0
+            .iter()
+            .find(|(uploaded, _)| *uploaded == key)
+            .map(|(_, image_id)| *image_id)
+    }
+
+    fn ids(&self) -> impl Iterator<Item = vello_common::paint::ImageId> + '_ {
+        self.0.iter().map(|(_, image_id)| *image_id)
+    }
+}
+
 impl AtlasWriter for Pixmap {
     fn width(&self) -> u32 {
         self.width() as u32

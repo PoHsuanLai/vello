@@ -47,7 +47,7 @@ vello_common = { workspace = true, features = ["pico_svg"] }
 roxmltree = "0.20.0"
 
 [features]
-default = ["wgpu", "wgpu_default", "text"]
+default = ["wgpu", "wgpu_default", "text", "png"]
 std = ["wgpu", "vello_common/std", "glifo?/std"]
 libm = ["vello_common/libm", "glifo?/libm"]
 wgpu = ["dep:wgpu", "dep:vello_sparse_shaders"]
@@ -57,6 +57,9 @@ wgpu = ["dep:wgpu", "dep:vello_sparse_shaders"]
 wgpu_default = ["wgpu", "wgpu/default"]
 # Add support for text rendering.
 text = ["dep:glifo", "glifo/std"]
+# Draw PNG bitmap glyphs: the colour emoji of `sbix` (Apple Color Emoji) and `CBDT` fonts. Each
+# is put in the atlas for the frame that draws it.
+png = ["text", "glifo/png"]
 probe = ["vello_common/probe"]
 webgl = ["dep:js-sys", "dep:web-sys", "dep:vello_sparse_shaders", "vello_sparse_shaders/glsl"]
 
