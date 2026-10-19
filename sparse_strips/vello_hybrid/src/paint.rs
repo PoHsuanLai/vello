@@ -116,3 +116,39 @@ impl<'a> PaintResolver<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PAINT_TYPE_IMAGE, PAINT_TYPE_SHIFT, PaintResolver};
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use vello_common::encode::{EncodedImage, EncodedPaint};
+    use vello_common::kurbo::{Affine, Vec2};
+    use vello_common::paint::{ImageSource, IndexedPaint, Paint};
+    use vello_common::peniko::{Extend, ImageQuality, ImageSampler};
+    use vello_common::pixmap::Pixmap;
+
+    // A bitmap glyph reaches the renderer as a pixmap, not an atlas id; it packs as an image
+    // all the same, and its id is found when the GPU paints are written.
+    #[test]
+    fn a_pixmap_image_packs_as_an_image() {
+        let encoded = [EncodedPaint::Image(EncodedImage {
+            source: ImageSource::Pixmap(Arc::new(Pixmap::new(2, 2))),
+            sampler: ImageSampler {
+                x_extend: Extend::Pad,
+                y_extend: Extend::Pad,
+                quality: ImageQuality::Low,
+                alpha: 1.0,
+            },
+            may_have_transparency: true,
+            transform: Affine::IDENTITY,
+            x_advance: Vec2::new(1.0, 0.0),
+            y_advance: Vec2::new(0.0, 1.0),
+            tint: None,
+        })];
+        let offsets = vec![0, 0];
+        let packed =
+            PaintResolver::new(&encoded, &offsets).pack(&Paint::Indexed(IndexedPaint::new(0)));
+        assert_eq!((packed.paint >> PAINT_TYPE_SHIFT) & 0x7, PAINT_TYPE_IMAGE);
+    }
+}
