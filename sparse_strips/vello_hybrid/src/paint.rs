@@ -6,7 +6,7 @@
 use crate::util::pack_u16_pair;
 use vello_common::TextureId;
 use vello_common::encode::{EncodedKind, EncodedPaint};
-use vello_common::paint::{ImageSource, Paint};
+use vello_common::paint::Paint;
 
 const COLOR_SOURCE_PAYLOAD: u32 = 0;
 pub(crate) const COLOR_SOURCE_LAYER: u32 = 1;
@@ -87,10 +87,9 @@ impl<'a> PaintResolver<'a> {
                 let encoded_paint = &self.encoded[paint_id];
 
                 let (paint_type, external_texture_id) = match encoded_paint {
-                    EncodedPaint::Image(encoded_image) => match &encoded_image.source {
-                        ImageSource::OpaqueId { .. } => (PAINT_TYPE_IMAGE, None),
-                        _ => unimplemented!("Unsupported image source"),
-                    },
+                    // A pixmap is put in the atlas for the frame before it is drawn, so it packs
+                    // as any other image; its id is resolved with the GPU paints.
+                    EncodedPaint::Image(_) => (PAINT_TYPE_IMAGE, None),
                     EncodedPaint::ExternalTexture(texture) => {
                         (PAINT_TYPE_IMAGE, Some(texture.texture_id))
                     }
